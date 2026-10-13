@@ -2,32 +2,30 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_REPO = 'ignatiusnobel13/aws-devops-demo'
-        MINIKUBE_IP = '13.203.205.208'
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        IMAGE_NAME = 'ignatiusnobel13/aws-devops-demo'
+        MINIKUBE_HOST = '13.203.205.208'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'develop', url: 'https://github.com/Ignatius-Nobel/aws-springboot-devops.git'
+                checkout scm
             }
         }
 
-        stage('Docker Build') {
+        stage('Build and Push Docker Image') {
             steps {
-                sh "docker build -t ${DOCKERHUB_REPO}:${IMAGE_TAG} ."
-                sh "docker tag ${DOCKERHUB_REPO}:${IMAGE_TAG} ${DOCKERHUB_REPO}:latest"
-            }
-        }
-
-        stage('Docker Hub Push') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKERHUB_USER', passwordVariable: 'DOCKERHUB_PASS')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKERHUB_USERNAME',
+                    passwordVariable: 'DOCKERHUB_PASSWORD'
+                )]) {
                     sh '''
-                        echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USER" --password-stdin
-                        docker push ${DOCKERHUB_REPO}:${IMAGE_TAG}
-                        docker push ${DOCKERHUB_REPO}:latest
+                        set -eu
+                        docker build -t "$IMAGE_NAME:$BUILD_NUMBER" .
+                        echo "$DOCKERHUB_PASSWORD" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+                        docker push "$IMAGE_NAME:$BUILD_NUMBER"
+                        docker logout
                     '''
                 }
             }
@@ -35,14 +33,22 @@ pipeline {
 
         stage('Deploy to Minikube') {
             steps {
-                sshagent(['minikube-ssh']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ubuntu@${MINIKUBE_IP} '
-                            export KUBECONFIG=/home/ubuntu/.kube/config
-                            kubectl set image deployment/aws-devops-demo aws-devops-demo=${DOCKERHUB_REPO}:${IMAGE_TAG} --record
-                            kubectl rollout status deployment/aws-devops-demo
-                        '
-                    """
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'minikube-ssh',
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh '''
+                        set -eu
+                        REMOTE_DIR="/tmp/aws-devops-demo-$BUILD_NUMBER"
+                        SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no"
+                        ssh $SSH_OPTS "$SSH_USER@$MINIKUBE_HOST" "mkdir -p '$REMOTE_DIR'"
+                        scp $SSH_OPTS -r k8s "$SSH_USER@$MINIKUBE_HOST:$REMOTE_DIR/"
+                        ssh $SSH_OPTS "$SSH_USER@$MINIKUBE_HOST" \
+                            "kubectl apply -f '$REMOTE_DIR/k8s' && \
+                            kubectl set image deployment/aws-devops-demo aws-devops-demo='$IMAGE_NAME:$BUILD_NUMBER' && \
+                            kubectl rollout status deployment/aws-devops-demo"
+                    '''
                 }
             }
         }
