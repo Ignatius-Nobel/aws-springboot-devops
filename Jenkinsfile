@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         IMAGE_NAME = 'ignatiusnobel13/aws-devops-demo'
-        MINIKUBE_HOST = '13.203.205.208'
+        MINIKUBE_HOST = '65.2.127.1'
     }
 
     stages {
